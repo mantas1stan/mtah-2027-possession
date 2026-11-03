@@ -7,8 +7,8 @@ every parameter tuned on **external** matches only.
 
 1. **Evidence per frame** (`solution/possession.py`)
    - *alive vs dead*: ball visible in the field, ball missing, ball resting, players' mean speed;
-   - *home vs away*: which team has a player within control range of the ball, plus a light prior
-     from the Smart Tagging phase team.
+   - *home vs away*: which team has a player within control range of the ball. (A Smart Tagging
+     prior exists in the code but is off: it cannot be tuned on the external games.)
 2. **Decoding**: a 3-state (H / A / D) Viterbi with a fixed cost for every change of state, so a
    lone touch or deflection cannot flip possession and each possession comes out as one interval.
 3. **Tuning** (`solution/tune.py`): coordinate search on the official `spellF1`, computed against
