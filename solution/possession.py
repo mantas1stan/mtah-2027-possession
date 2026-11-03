@@ -8,7 +8,8 @@ Evidence, as per-frame log-scores:
                   ball outside the lines, ball absent, players slow, ball resting -> dead
   home vs away    which team has a player within control range of the ball, discounted while
                   the ball travels fast (a pass flying past an opponent is not control);
-                  a light prior from the Smart Tagging phase team.
+                  optionally a light prior from the Smart Tagging phase team (off, see
+                  TAG_PRIOR).
 
 The decoder pays a fixed cost for every change of state, so a lone touch or a deflection cannot
 flip possession -- only sustained control by the other team can. That is what turns flickering
@@ -35,6 +36,12 @@ ALIVE_BALL_IN_FIELD = 0.30
 DEAD_BALL_OUT = -1.00       # ball beyond a line by more than OUT_MARGIN_M
 OUT_MARGIN_M = 0.5
 DEAD_BALL_MISSING = -0.20
+# v3: the tracker also drops the ball briefly in open play (aerial balls, crowded areas); only a
+# gap at least MISSING_MIN_RUN frames long carries the full dead-ball weight
+MISSING_MIN_RUN = 1
+DEAD_BALL_MISSING_SHORT = -0.20
+# v3: dead-ball stretches shorter than this are decoder blips, not stoppages, and are removed
+MIN_DEAD_FRAMES = 0
 SPEED_PIVOT = 1.5           # m/s mean player speed separating play from stoppage (histogram mode ~1.1)
 SPEED_GAIN = 0.15           # nats per frame per m/s away from the pivot
 SPEED_SMOOTH = FPS          # +/- frames for the mean player speed
@@ -58,7 +65,9 @@ TEAM_GAIN = 0.30
 FAST_BALL = 7.0             # m/s; above this the ball is travelling, not controlled
 FAST_BALL_DISCOUNT = 0.25
 BALL_SMOOTH = 2             # +/- frames for ball velocity
-TAG_PRIOR = 0.01            # nats per frame toward the Smart Tagging phase team
+# Nats per frame toward the Smart Tagging phase team. Off: the external games have no Smart
+# Tagging, so this weight cannot be tuned on external data as the rules require.
+TAG_PRIOR = 0.0
 
 # decoder: cost of each change of state, in nats
 COST_SWITCH_TEAM = 6.0
@@ -122,7 +131,9 @@ def evidence(trk, tags, game=GAME):
     resting = has & (np.nan_to_num(ball_speed, nan=99.0) < RESTING_BALL_SPEED)
     resting &= _run_lengths_at(resting) >= RESTING_FRAMES
 
-    alive = np.where(~has, DEAD_BALL_MISSING, np.where(out, DEAD_BALL_OUT, ALIVE_BALL_IN_FIELD))
+    long_gap = _run_lengths_at(~has) >= MISSING_MIN_RUN
+    missing = np.where(long_gap, DEAD_BALL_MISSING, DEAD_BALL_MISSING_SHORT)
+    alive = np.where(~has, missing, np.where(out, DEAD_BALL_OUT, ALIVE_BALL_IN_FIELD))
     resting_term = np.where(resting, np.where(slow_speed < RESTING_SLOW_SPEED,
                                               DEAD_BALL_RESTING_SLOW, DEAD_BALL_RESTING), 0.0)
     alive = alive + speed_term + resting_term + np.where(has, stoppage, 0.0)
@@ -196,6 +207,29 @@ def load_params(path=os.path.join(HERE, "params.json")):
     return params
 
 
+def drop_short_dead(path, min_frames):
+    """Relabel dead stretches shorter than min_frames that sit between two alive stretches.
+
+    Same team either side: the possession simply continues. Different teams: the hand-over is
+    placed in the middle of the blip.
+    """
+    if min_frames <= 0:
+        return path
+    path = path.copy()
+    breaks = np.concatenate(([0], np.flatnonzero(path[1:] != path[:-1]) + 1, [len(path)]))
+    for i in range(1, len(breaks) - 2):
+        start, stop = breaks[i], breaks[i + 1]
+        if path[start] != D or stop - start >= min_frames:
+            continue
+        before, after = path[start - 1], path[stop]
+        if before == D or after == D:
+            continue
+        middle = (start + stop) // 2
+        path[start:middle] = before
+        path[middle:stop] = after
+    return path
+
+
 def predict(trk, tags, game=GAME, blocks=None):
     """Label array over all video frames: H/A/D on graded frames, X elsewhere.
 
@@ -204,7 +238,7 @@ def predict(trk, tags, game=GAME, blocks=None):
     score = evidence(trk, tags, game)
     labels = np.full(len(score), "X", dtype="<U1")
     for _, first, last in blocks or half_video_blocks(game):
-        path = viterbi(score[first:last + 1])
+        path = drop_short_dead(viterbi(score[first:last + 1]), MIN_DEAD_FRAMES)
         labels[first:last + 1] = np.array(["H", "A", "D"])[path]
     if blocks is None:
         graded_pre_kickoff = slice(half_video_blocks(game)[1][1], SECOND_HALF_KICKOFF)

@@ -23,6 +23,9 @@ PARAMS_PATH = os.path.join(HERE, "params.json")
 MAX_SWEEPS = 4
 GRID = {
     "DEAD_BALL_MISSING": [-0.05, -0.1, -0.2, -0.3, -0.5, -0.8, -1.2, -1.8, -2.5, -4.0],
+    "MISSING_MIN_RUN": [1, 5, 10, 25, 50, 75, 125],
+    "DEAD_BALL_MISSING_SHORT": [0.0, -0.1, -0.2, -0.4, -0.8, -1.5],
+    "MIN_DEAD_FRAMES": [0, 5, 10, 15, 25, 38, 50],
     "ALIVE_BALL_IN_FIELD": [0.0, 0.1, 0.2, 0.3, 0.5, 0.8, 1.2],
     "DEAD_BALL_OUT": [0.0, -0.15, -0.3, -0.6, -1.0, -2.0, -3.0],
     "SPEED_PIVOT": [1.0, 1.25, 1.5, 1.75, 2.0, 2.5],

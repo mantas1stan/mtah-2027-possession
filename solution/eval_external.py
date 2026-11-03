@@ -33,9 +33,9 @@ def score_game(game, cache={}):
     return result
 
 
-def report():
+def report(games=None):
     rows = []
-    for g in external.GAMES:
+    for g in games or external.GAMES:
         r = score_game(g)
         rows.append((g, r["spell_f1_mean"], r["macro_f1"]))
         print("game {}  spellF1 {:.4f}  macroF1 {:.4f}".format(g, r["spell_f1_mean"], r["macro_f1"]))
@@ -44,4 +44,8 @@ def report():
 
 
 if __name__ == "__main__":
+    possession.load_params()
+    print("tuning games")
     report()
+    print("held-out games (never tuned on)")
+    report(external.HOLDOUT_GAMES)

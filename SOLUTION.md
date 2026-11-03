@@ -13,7 +13,8 @@ every parameter tuned on **external** matches only.
    lone touch or deflection cannot flip possession and each possession comes out as one interval.
 3. **Tuning** (`solution/tune.py`): coordinate search on the official `spellF1`, computed against
    frame labels derived from the event data of Metrica Sports' open sample games 1 and 2
-   (`solution/external.py`). The competition game and its ground truth are never used for tuning.
+   (`solution/external.py`). Game 3 is held out and only scored afterwards. The competition game
+   and its ground truth are never used for tuning.
 
 ## External data
 
@@ -52,3 +53,4 @@ across runs and machines.
 | `solution/tune.py` | the parameter search |
 | `solution/run.py` | produces the submission |
 | `tools/probe_atd.py` | prints the ATD schema and summary statistics |
+| `docs/technical_document.md` | the technical document |
