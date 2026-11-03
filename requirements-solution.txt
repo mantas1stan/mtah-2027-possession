@@ -1,0 +1,3 @@
+# Pinned environment that produced the submission (Python 3.13.5).
+numpy==2.3.1
+pandas==2.3.1
