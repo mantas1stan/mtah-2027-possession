@@ -1,6 +1,6 @@
 # Frame-level ball possession from automatic tracking
 
-**More than a Hack 2027 — Phase 1** · Team: `<team_name>`
+**More than a Hack 2027 — Phase 1** · Team: **Mantas Team**
 
 ## 1. Summary
 
@@ -46,6 +46,7 @@ All quantities are computed in metres from the normalised tracking. No player id
 only team membership, which suits tracking whose slots switch identity.
 
 **Alive model** — logistic regression, P(ball in play):
+
 - ball visible or not; length of the current gap, frames since the ball was last seen and until it
   is next seen; length of the current stretch of visibility;
 - how far outside the lines the ball is; distance to the nearest line; ball speed; how long the
@@ -55,6 +56,7 @@ only team membership, which suits tracking whose slots switch identity.
 
 **Team model** — logistic regression without intercept, P(home has the ball), using only
 home-minus-away features so it cannot learn a preference for either side:
+
 - nearest and second-nearest distance to the ball per team (linear and log);
 - closeness of the nearest player, and closeness weighted by how well the player moves *with*
   the ball (dribbling);
@@ -189,8 +191,8 @@ python solution/learned.py --cv      # optional: leave-one-game-out scores
 python solution/learned.py --final   # optional: refits solution/model.json on games 1-3
 python solution/tune.py --learned --final   # optional: regenerates solution/params.json
 python solution/eval_external.py     # external scores in the table above
-python solution/run.py --out <team_name>.csv
-python evaluation/validate_submission.py <team_name>.csv
+python solution/run.py --out Mantas_Team.csv
+python evaluation/validate_submission.py Mantas_Team.csv
 ```
 
 `run.py` is deterministic and writes `\n` line endings, so the file is byte-identical across runs
