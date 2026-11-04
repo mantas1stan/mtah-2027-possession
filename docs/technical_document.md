@@ -67,6 +67,9 @@ home-minus-away features so it cannot learn a preference for either side:
   the difference in team spread, pressing (speed of each team's three nearest players towards the
   ball), and which team's attacking half the ball is in.
 
+The logits are scaled (`ALIVE_SCALE`, `TEAM_SCALE`, tuned) before decoding, because consecutive
+frames are far from independent.
+
 **Hand-over weighting.** Frames within 2 s of a change of state are a small share of all frames,
 yet they decide where every possession starts and ends. Both models weight them ×40 in training;
 in cross-validation this raised spellF1 from 0.735 to 0.761, on every left-out game. Weights from
@@ -84,9 +87,6 @@ external games). We found this by comparing average feature values on ball-visib
 the external games and BAR-ATH — summary statistics only, no labels — and removed the feature;
 cross-validated spellF1 was unchanged (0.761). A check worth repeating for any feature: does it
 mean the same thing in both tracking sources?
-
-The logits are scaled (`ALIVE_SCALE`, `TEAM_SCALE`, tuned) before decoding, because consecutive
-frames are far from independent.
 
 ### 2.2 Decoding
 
@@ -111,7 +111,7 @@ Ungraded frames are `X`.
 
 | dataset | source | labelled by | amount |
 |---|---|---|---|
-| Metrica Sports open sample games 1–3 | https://github.com/metrica-sports/sample-data | Metrica Sports (event data); frame labels derived from it by our code | 3 matches: games 1–2 train and tune, game 3 held out |
+| Metrica Sports open sample games 1–3 | https://github.com/metrica-sports/sample-data | Metrica Sports (event data); frame labels derived from it by our code | 3 matches (≈ 4.8 h of tracking at 25 fps): used for leave-one-game-out validation, then all three for the final fit |
 
 No data about BAR-ATH other than the provided automatic assets is used, and nothing was labelled
 by hand.
@@ -123,9 +123,12 @@ piece, shot, recovery); a loose ball stays with the last team; play is dead from
 possession event when a quick restart was not logged as a set piece.
 
 **Making the external games look like the competition data.** Player identities are discarded
-(only team membership is kept), speeds are computed from positions, and the ball is used exactly
-as tracked — its absence rate (32–41%) and the players' speed distribution match the competition
-tracking closely, which is why parameters transfer.
+(only team membership is kept) and the ball is used exactly as tracked. The external games have no
+speed channel, so player speeds are computed from positions; the competition ATD's own speeds are
+used for BAR-ATH. The ball's absence rate (32–41% against 41%) and the distribution of mean player
+speed (median 1.52–1.56 m/s against 1.52 m/s) match closely, which is why the models transfer.
+Every feature was also checked for the same meaning in both sources (see "Removed for not
+transferring" above).
 
 **Training** (`solution/learned.py`): both logistic regressions are fitted by Newton's method with
 a ridge penalty on standardised features. Feature and weighting choices are compared by
@@ -162,7 +165,21 @@ games (`--final`) for the submitted parameters.
 - Next steps: more external training matches; using the video for ball height and whistle
   detection; Smart Tagging as a prior if external tagged data exists.
 
-## 7. Reproduction
+## 7. Compliance with the rules
+
+- **No hand labels, no human-produced data about BAR-ATH.** Every label comes out of the code; the
+  only human-produced data used is Metrica's event data for three *other* matches.
+- **No training, fitting or tuning on the ground truth or the video.** All models are trained and
+  all parameters tuned on the external matches only. The video is not used at all. Early
+  prototypes were scored against the public 5-minute window as a pipeline check before the
+  organisers' clarification of the rules; none of their parameters survive — every current
+  parameter comes from the external training and tuning described above.
+- **Automatic checks on the provided data** are limited to label-free summary statistics (feature
+  averages, possession and stoppage counts), used to detect features that do not transfer.
+- **Reproducible**: the repository regenerates the submitted file byte-for-byte (verified from a
+  fresh clone).
+
+## 8. Reproduction
 
 ```bash
 pip install -r requirements-solution.txt
@@ -176,4 +193,6 @@ python solution/run.py --out <team_name>.csv
 python evaluation/validate_submission.py <team_name>.csv
 ```
 
-`run.py` is deterministic and writes `\n` line endings, so the file is byte-identical across runs.
+`run.py` is deterministic and writes `\n` line endings, so the file is byte-identical across runs
+and machines. Run times on a laptop: `run.py` about 30 s (the first run also caches the parsed
+tracking); `learned.py --final` about 1 min; `tune.py --learned --final` 10–15 min.

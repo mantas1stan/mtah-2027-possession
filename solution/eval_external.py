@@ -2,7 +2,7 @@
 
     python solution/eval_external.py
 
-This is where parameters are chosen: the competition game is never scored for tuning.
+This is where models are compared: the competition game is never scored for tuning.
 """
 
 import os
@@ -53,7 +53,10 @@ def report(games=None):
 
 if __name__ == "__main__":
     possession.load_params()
-    print("tuning games")
+    # The submitted model and parameters are fitted on all three games, so these scores are
+    # in-sample. The out-of-sample estimate is `python solution/learned.py --cv`.
+    print("games 1-2")
     report()
-    print("held-out games (never tuned on)")
+    print("game 3")
     report(external.HOLDOUT_GAMES)
+    print("(in-sample for the submitted model; out-of-sample estimate: learned.py --cv)")
