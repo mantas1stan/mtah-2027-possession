@@ -4,18 +4,22 @@
 
 ## 1. Summary
 
-We label every frame of BAR-ATH as `H`, `A` or `D` with a small, fully interpretable pipeline:
-per-frame evidence computed from the tactical tracking, decoded into whole possessions by a
-3-state Viterbi with a cost for every change of state. Every tunable parameter is tuned on
-**external** matches — Metrica Sports' open sample games, labelled automatically from their event
-data — and the competition game, its video and its ground truth are never used for tuning.
+We label every frame of BAR-ATH as `H`, `A` or `D` with a small, interpretable pipeline: two
+logistic regressions turn geometric features of the tactical tracking into per-frame evidence
+(ball in play? which team controls it?), and a 3-state Viterbi with a cost for every change of
+state decodes that evidence into whole possessions. The models are trained, and every parameter
+tuned, on **external** matches — Metrica Sports' open sample games, labelled automatically from
+their event data. The competition game, its video and its ground truth are never used for
+training or tuning.
 
-| | spellF1 | macroF1 |
+| model | external training/tuning games (1, 2) | **external held-out game (3)** |
 |---|---|---|
-| external tuning games (1, 2) | 0.752 | 0.934 |
-| **external held-out game (3)** | **0.686** | 0.911 |
+| hand-built evidence | spellF1 0.752 · macroF1 0.934 | spellF1 0.686 · macroF1 0.911 |
+| **learned evidence (submitted)** | spellF1 0.732 · macroF1 0.936 | **spellF1 0.720 · macroF1 0.924** |
 
-The held-out game is our estimate of performance on an unseen match.
+The held-out game is our estimate of performance on an unseen match. Game 3 was used once, to
+choose between the two models above (the learned one generalises better: its gap between seen and
+unseen games is 0.01 against 0.07), so its score for the chosen model is slightly optimistic.
 
 ## 2. Approach and why
 
@@ -25,27 +29,38 @@ the label can only change when the evidence for a new state outweighs a fixed ch
 lone touch, a deflection or a tracking glitch cannot split a possession, while a real hand-over
 moves the label at the frame where the evidence flips — which is what makes the boundaries sharp.
 
-We chose a hand-built evidence model over a learned per-frame classifier because (a) the external
-labelled data is three matches, too little to train a classifier that would not overfit its
-event-derived labels, and (b) every parameter has a football meaning, so the result can be
-inspected and its failure modes explained.
+We first built the evidence by hand (distance-to-ball control scores and dead-ball rules, each
+weight tuned on the external games). Error analysis on the external games showed the main loss was
+missed hand-overs between teams, which need several cues weighed together; we therefore replaced
+the hand-built scores with two small linear models trained on the external games. They have few
+coefficients (14 and 17), are regularised, and every feature has a football meaning, so they
+cannot memorise three matches the way a large classifier could.
 
-### 2.1 Per-frame evidence
+### 2.1 Per-frame evidence (`solution/learned.py`)
 
-All quantities are computed in metres from the normalised tracking.
+All quantities are computed in metres from the normalised tracking. No player identity is used,
+only team membership, which suits tracking whose slots switch identity.
 
-**Alive vs dead** (log-score, positive = alive)
-- ball missing: strong dead evidence when the gap lasts at least `MISSING_MIN_RUN` frames, weaker
-  for brief dropouts (the tracker also loses the ball briefly in open play);
-- ball visible inside the field: alive evidence;
-- ball resting (speed < 0.5 m/s for at least 1 s): a restart being prepared;
-- mean player speed relative to a pivot: play vs stoppage.
+**Alive model** — logistic regression, P(ball in play):
+- ball visible or not; length of the current gap, frames since the ball was last seen and until it
+  is next seen; length of the current stretch of visibility;
+- how far outside the lines the ball is; distance to the nearest line; ball speed; how long the
+  ball has been resting;
+- mean player speed over ±1 s and ±3 s, and its trend (players slow down after a whistle);
+- number of tracked players; distance from the ball to the nearest player.
 
-**Home vs away**
-- for each team, the distance from its nearest player to the ball, turned into a control score
-  that is 1 at the ball and 0 beyond `CONTROL_RADIUS_M`; the evidence is the home score minus the
-  away score, scaled by `TEAM_GAIN`. No player identity is needed, which suits tracking whose
-  slots switch identity.
+**Team model** — logistic regression without intercept, P(home has the ball), using only
+home-minus-away features so it cannot learn a preference for either side:
+- nearest and second-nearest distance to the ball per team (linear and log);
+- closeness of the nearest player, and closeness weighted by how well the player moves *with*
+  the ball (dribbling);
+- closeness while the ball is slow, and at sudden changes of ball direction (touches);
+- players of each team within 2 m and 5 m;
+- the control balance over the previous and next 0.5 s, 2 s and 5 s, and the last/next value
+  seen around a gap in ball tracking.
+
+The logits are scaled (`ALIVE_SCALE`, `TEAM_SCALE`, tuned) before decoding, because consecutive
+frames are far from independent.
 
 ### 2.2 Decoding
 
@@ -70,7 +85,7 @@ Ungraded frames are `X`.
 
 | dataset | source | labelled by | amount |
 |---|---|---|---|
-| Metrica Sports open sample games 1–3 | https://github.com/metrica-sports/sample-data | Metrica Sports (event data); frame labels derived from it by our code | 3 matches |
+| Metrica Sports open sample games 1–3 | https://github.com/metrica-sports/sample-data | Metrica Sports (event data); frame labels derived from it by our code | 3 matches: games 1–2 train and tune, game 3 held out |
 
 No data about BAR-ATH other than the provided automatic assets is used, and nothing was labelled
 by hand.
@@ -86,12 +101,16 @@ possession event when a quick restart was not logged as a set piece.
 as tracked — its absence rate (32–41%) and the players' speed distribution match the competition
 tracking closely, which is why parameters transfer.
 
-**Tuning** (`solution/tune.py`): coordinate search over a grid per parameter, maximising mean
-`spellF1` over games 1 and 2 with the official metric code; game 3 is scored only afterwards.
+**Training** (`solution/learned.py`): both logistic regressions are fitted by Newton's method with
+a ridge penalty on standardised features, on every labelled frame of games 1 and 2.
+
+**Tuning** (`solution/tune.py --learned`): coordinate search over a grid per parameter (logit
+scales and bias, the three change costs, the minimum dead-ball length), maximising mean `spellF1`
+over games 1 and 2 with the official metric code; game 3 is scored only afterwards.
 
 ## 5. Possession rules implemented
 
-- **Control** = a player within roughly `CONTROL_RADIUS_M` of the ball, sustained long enough to
+- **Control** = a team's player close to and moving with the ball, sustained long enough to
   outweigh the change cost; a single touch or deflection by the other team does not change
   possession.
 - **Loose balls / contested balls**: no control evidence either way, so possession stays with the
@@ -109,8 +128,10 @@ tracking closely, which is why parameters transfer.
 - Dead-ball detection relies heavily on the tracker dropping the ball during stoppages; a stoppage
   where the ball stays tracked (a quick free kick) is harder.
 - Aerial balls: without ball height, a high ball passing over a player looks like control.
-- Next steps: a learned evidence model once more labelled matches are available; using the video
-  for ball height and whistle detection; Smart Tagging as a prior if external tagged data exists.
+- Three external matches is little training data; more labelled matches (any provider) would let
+  the evidence models use more features without overfitting.
+- Next steps: more external training matches; using the video for ball height and whistle
+  detection; Smart Tagging as a prior if external tagged data exists.
 
 ## 7. Reproduction
 
@@ -118,7 +139,8 @@ tracking closely, which is why parameters transfer.
 pip install -r requirements-solution.txt
 export MTAH_DATA_DIR=/path/to/competition/data
 export MTAH_EXTERNAL_DIR=/path/to/metrica-sample      # only for tuning / external scores
-python solution/tune.py              # optional: regenerates solution/params.json
+python solution/learned.py           # optional: refits solution/model.json on games 1-2
+python solution/tune.py --learned    # optional: regenerates solution/params.json
 python solution/eval_external.py     # external scores in the table above
 python solution/run.py --out <team_name>.csv
 python evaluation/validate_submission.py <team_name>.csv

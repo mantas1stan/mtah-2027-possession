@@ -24,6 +24,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
+sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(ROOT, "starter"))
 from games import GAME, GAMES, half_video_blocks  # noqa: E402
 
@@ -69,6 +70,14 @@ BALL_SMOOTH = 2             # +/- frames for ball velocity
 # Tagging, so this weight cannot be tuned on external data as the rules require.
 TAG_PRIOR = 0.0
 
+# v4: learned evidence (solution/learned.py, trained on the external games) instead of the
+# hand-built scores above. The logits are scaled because consecutive frames are far from
+# independent, and the alive logit is shifted by a bias that sets the dead/alive balance.
+USE_LEARNED = False
+ALIVE_SCALE = 0.3
+ALIVE_BIAS = 0.0
+TEAM_SCALE = 0.3
+
 # decoder: cost of each change of state, in nats
 COST_SWITCH_TEAM = 6.0
 COST_TO_DEAD = 8.0
@@ -109,8 +118,32 @@ def _run_lengths_at(mask):
     return out
 
 
+_LOGIT_CACHE = {}  # the logits do not depend on the tuned parameters; computed once per game
+
+
+def learned_evidence(trk, game=GAME, model=None):
+    """(n, 3) per-frame log-scores for H, A, D from the two learned logistic models."""
+    import learned
+    key = (id(trk["bx"]), game)
+    if key not in _LOGIT_CACHE:
+        model = model or learned.load_model()
+        alive_x, _, team_x, _ = learned.features(trk, game)
+        _LOGIT_CACHE[key] = (learned.logit(model["alive"], alive_x),
+                             learned.logit(model["team"], team_x))
+    alive_logit, team_logit = _LOGIT_CACHE[key]
+    alive = ALIVE_SCALE * (alive_logit - ALIVE_BIAS)
+    team = TEAM_SCALE * team_logit
+    score = np.zeros((len(alive), 3))
+    score[:, H] = 0.5 * alive + 0.5 * team
+    score[:, A] = 0.5 * alive - 0.5 * team
+    score[:, D] = -0.5 * alive
+    return score
+
+
 def evidence(trk, tags, game=GAME):
     """(n, 3) per-frame log-scores for H, A, D."""
+    if USE_LEARNED:
+        return learned_evidence(trk, game)
     length, width = GAMES[game]["pitch"]
     bx, by = trk["bx"], trk["by"]
     n = len(bx)

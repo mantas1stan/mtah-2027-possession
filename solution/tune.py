@@ -40,6 +40,16 @@ GRID = {
     "COST_TO_DEAD": [0.5, 1.0, 2.0, 3.0, 5.0, 8.0],
     "COST_FROM_DEAD": [0.5, 1.0, 2.0, 3.0, 5.0, 8.0],
 }
+# With --learned, only the parameters the learned evidence uses are searched.
+LEARNED_GRID = {
+    "ALIVE_SCALE": [0.03, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5],
+    "ALIVE_BIAS": [-3.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 3.0],
+    "TEAM_SCALE": [0.03, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5],
+    "COST_SWITCH_TEAM": [0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 9.0],
+    "COST_TO_DEAD": [0.5, 1.0, 2.0, 3.0, 5.0, 8.0],
+    "COST_FROM_DEAD": [0.5, 1.0, 2.0, 3.0, 5.0, 8.0],
+    "MIN_DEAD_FRAMES": [0, 5, 10, 15, 25, 38, 50],
+}
 # FAST_BALL_DISCOUNT tuned to 1.0 (no discount) in the first search, which makes FAST_BALL moot:
 # both are dropped from the search and fixed in params.json.
 
@@ -55,6 +65,12 @@ def apply(params):
 
 def current():
     return {k: getattr(possession, k) for k in GRID}
+
+
+def use_learned_grid():
+    global GRID
+    GRID = LEARNED_GRID
+    possession.USE_LEARNED = True
 
 
 def coordinate_search(games, log=print):
@@ -81,8 +97,13 @@ def coordinate_search(games, log=print):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--cross", action="store_true")
+    parser.add_argument("--learned", action="store_true",
+                        help="tune the learned-evidence model (solution/learned.py)")
     args = parser.parse_args()
     fixed = possession.load_params(PARAMS_PATH)  # resume from the last search, if any
+    if args.learned:
+        use_learned_grid()
+        fixed["USE_LEARNED"] = True
     defaults = current()
 
     if args.cross:
