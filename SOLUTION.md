@@ -34,8 +34,8 @@ or set `MTAH_EXTERNAL_DIR` to the folder holding `Sample_Game_1/` .. `Sample_Gam
 ```bash
 pip install -r requirements-solution.txt
 export MTAH_DATA_DIR=/path/to/competition/data        # holds tactical/ and broadcast/
-python solution/learned.py                            # optional: refits solution/model.json
-python solution/tune.py --learned                     # optional: re-tunes solution/params.json
+python solution/learned.py --final                    # optional: refits solution/model.json
+python solution/tune.py --learned --final             # optional: re-tunes solution/params.json
 python solution/run.py --out evaluation/results/<team_name>.csv
 python evaluation/validate_submission.py evaluation/results/<team_name>.csv
 ```

@@ -119,18 +119,21 @@ def _run_lengths_at(mask):
 
 
 _LOGIT_CACHE = {}  # the logits do not depend on the tuned parameters; computed once per game
+MODEL_OVERRIDE = None  # cross-validation swaps in a model fitted on the other games
 
 
 def learned_evidence(trk, game=GAME, model=None):
     """(n, 3) per-frame log-scores for H, A, D from the two learned logistic models."""
     import learned
-    key = (id(trk["bx"]), game)
-    if key not in _LOGIT_CACHE:
-        model = model or learned.load_model()
+    model = model or MODEL_OVERRIDE
+    key = (id(trk), game, id(model))
+    hit = _LOGIT_CACHE.get(key)
+    if hit is None or hit[0] is not trk or hit[1] is not model:  # guard against reused ids
+        fitted = model or learned.load_model()
         alive_x, _, team_x, _ = learned.features(trk, game)
-        _LOGIT_CACHE[key] = (learned.logit(model["alive"], alive_x),
-                             learned.logit(model["team"], team_x))
-    alive_logit, team_logit = _LOGIT_CACHE[key]
+        hit = _LOGIT_CACHE[key] = (trk, model, learned.logit(fitted["alive"], alive_x),
+                                   learned.logit(fitted["team"], team_x))
+    alive_logit, team_logit = hit[2], hit[3]
     alive = ALIVE_SCALE * (alive_logit - ALIVE_BIAS)
     team = TEAM_SCALE * team_logit
     score = np.zeros((len(alive), 3))

@@ -12,14 +12,18 @@ tuned, on **external** matches — Metrica Sports' open sample games, labelled a
 their event data. The competition game, its video and its ground truth are never used for
 training or tuning.
 
-| model | external training/tuning games (1, 2) | **external held-out game (3)** |
-|---|---|---|
-| hand-built evidence | spellF1 0.752 · macroF1 0.934 | spellF1 0.686 · macroF1 0.911 |
-| **learned evidence (submitted)** | spellF1 0.732 · macroF1 0.936 | **spellF1 0.720 · macroF1 0.924** |
+| model | trained/tuned on games 1–2 | held-out game 3 | **leave-one-game-out mean** |
+|---|---|---|---|
+| hand-built evidence | 0.752 | 0.686 | — |
+| learned evidence | 0.732 | 0.720 | 0.724 |
+| + team shape and movement features | — | 0.720 | 0.735 |
+| **+ hand-over weighting (submitted)** | 0.777 | 0.747 | **0.761** |
 
-The held-out game is our estimate of performance on an unseen match. Game 3 was used once, to
-choose between the two models above (the learned one generalises better: its gap between seen and
-unseen games is 0.01 against 0.07), so its score for the chosen model is slightly optimistic.
+All numbers are `spellF1` from the official metric code, against labels derived from Metrica's
+event data. Game 3 was first held out and used once, to choose between the hand-built and learned
+evidence. Every later choice was made by leave-one-game-out cross-validation (fit on two games,
+score the third, rotate), and the submitted model is then fitted on all three games. **Our
+estimate for an unseen match is the cross-validated 0.76.**
 
 ## 2. Approach and why
 
@@ -33,7 +37,7 @@ We first built the evidence by hand (distance-to-ball control scores and dead-ba
 weight tuned on the external games). Error analysis on the external games showed the main loss was
 missed hand-overs between teams, which need several cues weighed together; we therefore replaced
 the hand-built scores with two small linear models trained on the external games. They have few
-coefficients (14 and 17), are regularised, and every feature has a football meaning, so they
+coefficients (13 and 24), are regularised, and every feature has a football meaning, so they
 cannot memorise three matches the way a large classifier could.
 
 ### 2.1 Per-frame evidence (`solution/learned.py`)
@@ -47,7 +51,7 @@ only team membership, which suits tracking whose slots switch identity.
 - how far outside the lines the ball is; distance to the nearest line; ball speed; how long the
   ball has been resting;
 - mean player speed over ±1 s and ±3 s, and its trend (players slow down after a whistle);
-- number of tracked players; distance from the ball to the nearest player.
+- distance from the ball to the nearest player.
 
 **Team model** — logistic regression without intercept, P(home has the ball), using only
 home-minus-away features so it cannot learn a preference for either side:
@@ -57,7 +61,29 @@ home-minus-away features so it cannot learn a preference for either side:
 - closeness while the ball is slow, and at sudden changes of ball direction (touches);
 - players of each team within 2 m and 5 m;
 - the control balance over the previous and next 0.5 s, 2 s and 5 s, and the last/next value
-  seen around a gap in ball tracking.
+  seen around a gap in ball tracking;
+- team shape and movement, which also work while the ball is lost: each team's forward movement
+  towards the goal it attacks (attacking direction inferred per half from where each team stands),
+  the difference in team spread, pressing (speed of each team's three nearest players towards the
+  ball), and which team's attacking half the ball is in.
+
+**Hand-over weighting.** Frames within 2 s of a change of state are a small share of all frames,
+yet they decide where every possession starts and ends. Both models weight them ×40 in training;
+in cross-validation this raised spellF1 from 0.735 to 0.761, on every left-out game. Weights from
+40 to 100 and windows from 1 to 3 s all score within 0.002 of each other.
+
+**Tried and dropped.** Set-piece shape features for the alive model (crowding around the ball,
+overall spread, corner zone, variation of player speeds): +0.0004 in cross-validation, i.e.
+nothing, so they are off (`ALIVE_SHAPE_FEATURES`).
+
+**Removed for not transferring.** The number of tracked players was first an alive feature. The
+external tracking has all 22 players on almost every frame, so the model learned that a missing
+player means a stoppage; the competition's automatic tracking regularly misses a player in open
+play, and on BAR-ATH this feature alone marked 19% of ball-visible frames as dead (2–4% on the
+external games). We found this by comparing average feature values on ball-visible frames between
+the external games and BAR-ATH — summary statistics only, no labels — and removed the feature;
+cross-validated spellF1 was unchanged (0.761). A check worth repeating for any feature: does it
+mean the same thing in both tracking sources?
 
 The logits are scaled (`ALIVE_SCALE`, `TEAM_SCALE`, tuned) before decoding, because consecutive
 frames are far from independent.
@@ -102,11 +128,14 @@ as tracked — its absence rate (32–41%) and the players' speed distribution m
 tracking closely, which is why parameters transfer.
 
 **Training** (`solution/learned.py`): both logistic regressions are fitted by Newton's method with
-a ridge penalty on standardised features, on every labelled frame of games 1 and 2.
+a ridge penalty on standardised features. Feature and weighting choices are compared by
+leave-one-game-out cross-validation (`--cv`); the submitted model is fitted on all three games
+(`--final`).
 
 **Tuning** (`solution/tune.py --learned`): coordinate search over a grid per parameter (logit
 scales and bias, the three change costs, the minimum dead-ball length), maximising mean `spellF1`
-over games 1 and 2 with the official metric code; game 3 is scored only afterwards.
+with the official metric code — on games 1 and 2 while estimating performance, and on all three
+games (`--final`) for the submitted parameters.
 
 ## 5. Possession rules implemented
 
@@ -139,8 +168,9 @@ over games 1 and 2 with the official metric code; game 3 is scored only afterwar
 pip install -r requirements-solution.txt
 export MTAH_DATA_DIR=/path/to/competition/data
 export MTAH_EXTERNAL_DIR=/path/to/metrica-sample      # only for tuning / external scores
-python solution/learned.py           # optional: refits solution/model.json on games 1-2
-python solution/tune.py --learned    # optional: regenerates solution/params.json
+python solution/learned.py --cv      # optional: leave-one-game-out scores
+python solution/learned.py --final   # optional: refits solution/model.json on games 1-3
+python solution/tune.py --learned --final   # optional: regenerates solution/params.json
 python solution/eval_external.py     # external scores in the table above
 python solution/run.py --out <team_name>.csv
 python evaluation/validate_submission.py <team_name>.csv

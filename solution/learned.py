@@ -8,8 +8,9 @@
                                                      preference for either side from the
                                                      external games, only how to read the geometry
 
-Training data: the event-derived labels of Metrica's sample games 1 and 2 (solution/external.py).
-Game 3 is never used here. possession.py turns the two logits into Viterbi scores.
+Training data: the event-derived labels of Metrica's sample games (solution/external.py). Model
+choices are made by leave-one-game-out cross-validation (--cv); the submitted model is then
+fitted on all three games (--final). possession.py turns the two logits into Viterbi scores.
 """
 
 import json
@@ -22,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 sys.path.insert(0, ROOT)
-from games import GAMES  # noqa: E402
+from games import GAMES, half_video_blocks  # noqa: E402
 
 # Params
 MODEL_PATH = os.path.join(HERE, "model.json")
@@ -31,6 +32,17 @@ FAR_M = 30.0          # stand-in distance where a team has nobody tracked
 L2 = 1.0              # ridge penalty on standardised coefficients
 NEWTON_STEPS = 25
 CONTEXT_WINDOWS = (12, 50, 125)  # frames looked back / ahead for the control context
+# Team shape and movement features (attacking direction, forward movement, spread, pressing,
+# ball half). Kept switchable so cross-validation can compare with and without them.
+SHAPE_FEATURES = True
+# Set-piece shape features for the alive model (crowding around the ball, overall spread, how
+# still the players are relative to each other).
+ALIVE_SHAPE_FEATURES = False  # tried: no measurable gain in cross-validation
+# Training weight of frames within HANDOVER_WINDOW frames of a change of possession (both
+# models): those frames are few but decide where possessions start and end.
+HANDOVER_WEIGHT = 40.0
+HANDOVER_WINDOW = 50
+MAX_PLAYER_SPEED = 12.0  # m/s; faster "movement" is a tracking identity switch
 
 
 def _centered(x, lo, hi):
@@ -74,8 +86,78 @@ def _fill(x, has, forward=True):
     return x[src]
 
 
+_FEATURE_CACHE = {}
+
+
 def features(trk, game):
-    """(alive_X, alive_names, team_X, team_names), one row per frame."""
+    """(alive_X, alive_names, team_X, team_names), one row per frame. Cached per tracking dict."""
+    key = (id(trk), game)
+    hit = _FEATURE_CACHE.get(key)
+    if hit is None or hit[0] is not trk:  # the cached object itself, not just a reused id
+        hit = _FEATURE_CACHE[key] = (trk, _features(trk, game))
+    return hit[1]
+
+
+def _half_of_frame(trk, game):
+    """Half number per frame (0 outside play): from trk['period'] if present, else the game's
+    published half boundaries."""
+    if "period" in trk:
+        return np.asarray(trk["period"], int)
+    out = np.zeros(len(trk["bx"]), int)
+    for half, first, last in half_video_blocks(game):
+        out[first:last + 1] = half
+    return out
+
+
+def _shape_features(trk, game, has, bx, length, dist):
+    """Home-minus-away features of team shape and movement; they work without the ball too."""
+    px, py = trk["px"].astype(np.float64), trk["py"].astype(np.float64)
+    with np.errstate(invalid="ignore"):
+        cx = {t: np.nanmean(px[:, trk["team"] == t], axis=1) for t in (0, 1)}
+        spread = {t: np.sqrt(np.nanvar(px[:, trk["team"] == t], axis=1)
+                             + np.nanvar(py[:, trk["team"] == t], axis=1)) for t in (0, 1)}
+    half = _half_of_frame(trk, game)
+    direction = np.zeros(len(bx))  # +1: home attacks towards +x
+    for h in np.unique(half[half > 0]):
+        sel = half == h
+        gap = np.nanmean(cx[1][sel] - cx[0][sel])
+        direction[sel] = 1.0 if gap > 0 else -1.0
+
+    forward = {}
+    for t, sign in ((0, 1.0), (1, -1.0)):
+        smooth = _centered(cx[t], -5, 5)
+        forward[t] = np.clip(np.gradient(smooth) * FPS, -6, 6) * sign * direction
+    fwd = forward[0] - forward[1]
+
+    # pressing: mean speed towards the ball of each team's three nearest players
+    pvx = np.clip(np.gradient(px, axis=0) * FPS, -MAX_PLAYER_SPEED, MAX_PLAYER_SPEED)
+    pvy = np.clip(np.gradient(py, axis=0) * FPS, -MAX_PLAYER_SPEED, MAX_PLAYER_SPEED)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ux = (bx[:, None] - px) / dist
+        uy = (trk["by"][:, None] - py) / dist
+        toward = np.nan_to_num(pvx * ux + pvy * uy)
+    press = {}
+    for t in (0, 1):
+        cols = np.flatnonzero(trk["team"] == t)
+        d = dist[:, cols]
+        k = np.argsort(d, axis=1)[:, :3]
+        press[t] = np.take_along_axis(toward[:, cols], k, axis=1).mean(axis=1)
+    press_diff = np.where(has, press[1] - press[0], np.nan)  # away pressing -> home has it
+
+    ball_half = np.where(has, (bx - length / 2) / (length / 2) * direction, np.nan)
+    cols = {
+        "fwd_12": np.nan_to_num(_centered(fwd, -12, 12)),
+        "fwd_50": np.nan_to_num(_centered(fwd, -50, 50)),
+        "spread_25": np.nan_to_num(_centered(spread[0] - spread[1], -25, 25)),
+        "press": np.nan_to_num(press_diff),
+        "press_12": np.nan_to_num(_centered(press_diff, -12, 12)),
+        "ball_half": np.nan_to_num(ball_half),
+        "ball_half_seen": np.where(has, 0.0, _fill(np.nan_to_num(ball_half), has, True)),
+    }
+    return cols
+
+
+def _features(trk, game):
     length, width = GAMES[game]["pitch"]
     bx, by = trk["bx"], trk["by"]
     has = ~np.isnan(bx)
@@ -132,6 +214,8 @@ def features(trk, game):
     seen = np.nan_to_num(control)
     team_cols["last_seen"] = np.where(has, 0.0, _fill(seen, has, True))
     team_cols["next_seen"] = np.where(has, 0.0, _fill(seen, has, False))
+    if SHAPE_FEATURES:
+        team_cols.update(_shape_features(trk, game, has, bx, length, dist))
 
     # alive features
     since, until = _since_until(has)
@@ -143,7 +227,6 @@ def features(trk, game):
     outside = np.where(has, np.maximum.reduce([-bx, bx - length, -by, by - width]), 0.0)
     edge = np.where(has, np.minimum.reduce([bx, length - bx, by, width - by]), 0.0)
     resting = has & (ball_speed < 0.5)
-    tracked = np.sum(~np.isnan(trk["px"]), axis=1)
     dmin = np.minimum(h["d1"], a["d1"])
     alive_cols = {
         "has": present,
@@ -156,15 +239,29 @@ def features(trk, game):
         "ball_speed": ball_speed * present,
         "log_resting_len": np.log1p(_run_lengths(resting)),
         "speed_1s": sp1, "speed_3s": sp3, "speed_trend": trend,
-        "tracked": tracked / 22.0,
+        # no "number of tracked players": the external tracking is complete on almost every
+        # frame, so the model learned that a missing player means a stoppage -- which does not
+        # transfer to the competition's automatic tracking, where players drop out in open play
         "dmin": np.where(has, np.minimum(dmin, 15), 0.0),
     }
+    if ALIVE_SHAPE_FEATURES:
+        px, py = trk["px"].astype(np.float64), trk["py"].astype(np.float64)
+        with np.errstate(invalid="ignore"):
+            spread_all = np.sqrt(np.nanvar(px, axis=1) + np.nanvar(py, axis=1))
+            speed_sd = np.nanstd(trk["ps"], axis=1)
+        crowd = np.sum(dist < 10.0, axis=1)
+        alive_cols["spread_all"] = np.nan_to_num(_centered(spread_all, -12, 12))
+        alive_cols["speed_sd_1s"] = np.nan_to_num(_centered(speed_sd, -25, 25))
+        alive_cols["crowd_10m"] = np.where(has, crowd, 0) / 22.0
+        alive_cols["corner_zone"] = np.where(
+            has, (np.minimum(bx, length - bx) < 3) & (np.minimum(by, width - by) < 3), 0.0)
     to_matrix = lambda cols: np.column_stack([np.asarray(v, float) for v in cols.values()])  # noqa: E731
     return to_matrix(alive_cols), list(alive_cols), to_matrix(team_cols), list(team_cols)
 
 
-def fit_logistic(X, y, intercept):
+def fit_logistic(X, y, intercept, weight=None):
     """Ridge logistic regression by Newton's method on standardised columns."""
+    weight = np.ones(len(y)) if weight is None else weight
     mu = X.mean(axis=0) if intercept else np.zeros(X.shape[1])
     sd = X.std(axis=0)
     sd[sd == 0] = 1.0
@@ -177,8 +274,8 @@ def fit_logistic(X, y, intercept):
         penalty[0] = 0.0
     for _ in range(NEWTON_STEPS):
         p = 1.0 / (1.0 + np.exp(-Z @ w))
-        grad = Z.T @ (p - y) + penalty * w
-        hess = (Z * (p * (1 - p))[:, None]).T @ Z + np.diag(penalty)
+        grad = Z.T @ (weight * (p - y)) + penalty * w
+        hess = (Z * (weight * p * (1 - p))[:, None]).T @ Z + np.diag(penalty)
         step = np.linalg.solve(hess, grad)
         w -= step
         if np.max(np.abs(step)) < 1e-8:
@@ -200,27 +297,63 @@ def load_model(path=MODEL_PATH):
 def train(games):
     import eval_external
     import external
-    rows_a, ya, rows_t, yt = [], [], [], []
+    rows_a, ya, rows_t, yt, wa, wt = [], [], [], [], [], []
     for g in games:
-        trk, blocks, labels = external.load_game(g)
+        trk, blocks, labels = eval_external.get_game(g)
         Xa, names_a, Xt, names_t = features(trk, eval_external.EXTERNAL_GAME)
         graded = labels != "X"
+        change = np.zeros(len(labels), bool)
+        change[1:] = (labels[1:] != labels[:-1]) & graded[1:] & graded[:-1]
+        near_change = np.convolve(change, np.ones(2 * HANDOVER_WINDOW + 1), "same") > 0
+        weight = np.where(near_change, HANDOVER_WEIGHT, 1.0)
         rows_a.append(Xa[graded])
         ya.append((labels[graded] != "D").astype(float))
+        wa.append(weight[graded])
         alive = (labels == "H") | (labels == "A")
         rows_t.append(Xt[alive])
         yt.append((labels[alive] == "H").astype(float))
-    alive_model = fit_logistic(np.vstack(rows_a), np.concatenate(ya), intercept=True)
-    team_model = fit_logistic(np.vstack(rows_t), np.concatenate(yt), intercept=False)
+        wt.append(weight[alive])
+    alive_model = fit_logistic(np.vstack(rows_a), np.concatenate(ya), intercept=True,
+                               weight=np.concatenate(wa))
+    team_model = fit_logistic(np.vstack(rows_t), np.concatenate(yt), intercept=False,
+                              weight=np.concatenate(wt))
     alive_model["names"], team_model["names"] = names_a, names_t
     prior = float(np.mean(np.concatenate(ya)))
     alive_model["prior_logit"] = float(np.log(prior / (1 - prior)))
     return {"alive": alive_model, "team": team_model, "trained_on": list(games)}
 
 
+def cross_validate(games):
+    """Leave one game out: fit on the others, score the left-out game with the current params.
+
+    Returns {game: spellF1}. This is how feature and model choices are compared.
+    """
+    import eval_external
+    import possession
+    out = {}
+    for test in games:
+        possession.MODEL_OVERRIDE = train([g for g in games if g != test])
+        out[test] = eval_external.score_game(test)["spell_f1_mean"]
+    possession.MODEL_OVERRIDE = None
+    return out
+
+
 if __name__ == "__main__":
+    import argparse
     import external
-    model = train(external.GAMES)
+    import possession
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--cv", action="store_true", help="leave-one-game-out scores only")
+    parser.add_argument("--final", action="store_true",
+                        help="fit on all three external games (the submitted model)")
+    args = parser.parse_args()
+    if args.cv:
+        possession.load_params()
+        scores = cross_validate(external.GAMES + external.HOLDOUT_GAMES)
+        print("leave-one-game-out spellF1", {g: round(v, 4) for g, v in scores.items()},
+              "mean {:.4f}".format(sum(scores.values()) / len(scores)))
+        raise SystemExit
+    model = train(external.GAMES + external.HOLDOUT_GAMES if args.final else external.GAMES)
     with open(MODEL_PATH, "w", newline="\n") as handle:
         json.dump(model, handle, indent=1)
         handle.write("\n")

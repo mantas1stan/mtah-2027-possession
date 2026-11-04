@@ -24,10 +24,18 @@ EXTERNAL_GAME = "METRICA-SAMPLE"
 GAMES.setdefault(EXTERNAL_GAME, {"pitch": external.PITCH, "fps": external.FPS})
 
 
-def score_game(game, cache={}):
-    if game not in cache:
-        cache[game] = external.load_game(game)
-    trk, blocks, gt = cache[game]
+_GAMES = {}
+
+
+def get_game(game):
+    """(tracking, blocks, labels) for an external game, loaded once per process."""
+    if game not in _GAMES:
+        _GAMES[game] = external.load_game(game)
+    return _GAMES[game]
+
+
+def score_game(game):
+    trk, blocks, gt = get_game(game)
     pred = possession.predict(trk, [], game=EXTERNAL_GAME, blocks=blocks)
     result = pm.evaluate(pm.label_codes(gt), pm.label_codes(pred))
     return result

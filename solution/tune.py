@@ -99,6 +99,8 @@ if __name__ == "__main__":
     parser.add_argument("--cross", action="store_true")
     parser.add_argument("--learned", action="store_true",
                         help="tune the learned-evidence model (solution/learned.py)")
+    parser.add_argument("--final", action="store_true",
+                        help="tune on all three external games (the submitted parameters)")
     args = parser.parse_args()
     fixed = possession.load_params(PARAMS_PATH)  # resume from the last search, if any
     if args.learned:
@@ -113,11 +115,13 @@ if __name__ == "__main__":
             print("tuned on game {}: {:.4f}   held-out game {}: {:.4f}".format(
                 train, score, test, objective([test])))
     else:
-        params, score = coordinate_search(list(eval_external.external.GAMES))
+        ext = eval_external.external
+        games = list(ext.GAMES + ext.HOLDOUT_GAMES) if args.final else list(ext.GAMES)
+        params, score = coordinate_search(games)
         params = dict(fixed, **params)
         with open(PARAMS_PATH, "w", newline="\n") as handle:
             json.dump(params, handle, indent=2, sort_keys=True)
             handle.write("\n")
-        for g in eval_external.external.GAMES:
+        for g in games:
             print("game {}: spellF1 {:.4f}".format(g, objective([g])))
         print("wrote", PARAMS_PATH)
