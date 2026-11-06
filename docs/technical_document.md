@@ -167,21 +167,7 @@ games (`--final`) for the submitted parameters.
 - Next steps: more external training matches; using the video for ball height and whistle
   detection; Smart Tagging as a prior if external tagged data exists.
 
-## 7. Compliance with the rules
-
-- **No hand labels, no human-produced data about BAR-ATH.** Every label comes out of the code; the
-  only human-produced data used is Metrica's event data for three *other* matches.
-- **No training, fitting or tuning on the ground truth or the video.** All models are trained and
-  all parameters tuned on the external matches only. The video is not used at all. Early
-  prototypes were scored against the public 5-minute window as a pipeline check before the
-  organisers' clarification of the rules; none of their parameters survive — every current
-  parameter comes from the external training and tuning described above.
-- **Automatic checks on the provided data** are limited to label-free summary statistics (feature
-  averages, possession and stoppage counts), used to detect features that do not transfer.
-- **Reproducible**: the repository regenerates the submitted file byte-for-byte (verified from a
-  fresh clone).
-
-## 8. Reproduction
+## 7. Reproduction
 
 ```bash
 pip install -r requirements-solution.txt
